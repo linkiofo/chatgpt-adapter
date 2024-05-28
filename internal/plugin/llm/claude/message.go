@@ -39,9 +39,8 @@ func waitMessage(chatResponse chan types.PartialResponse, cancel func(str string
 	return content, nil
 }
 
-func waitResponse(ctx *gin.Context, matchers []common.Matcher, chatResponse chan types.PartialResponse, sse bool) {
+func waitResponse(ctx *gin.Context, matchers []common.Matcher, chatResponse chan types.PartialResponse, sse bool) (content string) {
 	var (
-		content = ""
 		created = time.Now().Unix()
 		tokens  = ctx.GetInt(ginTokens)
 	)
@@ -56,6 +55,7 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, chatResponse chan
 		if message.Error != nil {
 			logger.Error(message.Error)
 			if response.NotSSEHeader(ctx) {
+				logger.Error(message.Error)
 				response.Error(ctx, -1, message.Error)
 			}
 			return
@@ -65,10 +65,18 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, chatResponse chan
 		logger.Debug(message.Text)
 
 		raw := common.ExecMatchers(matchers, message.Text)
+		if len(raw) == 0 {
+			continue
+		}
+
 		if sse {
 			response.SSEResponse(ctx, Model, raw, created)
 		}
 		content += raw
+	}
+
+	if content == "" && response.NotSSEHeader(ctx) {
+		return
 	}
 
 	ctx.Set(vars.GinCompletionUsage, common.CalcUsageTokens(content, tokens))
@@ -77,6 +85,7 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, chatResponse chan
 	} else {
 		response.SSEResponse(ctx, Model, "[DONE]", created)
 	}
+	return
 }
 
 func mergeMessages(messages []pkg.Keyv[interface{}]) (attachment []types.Attachment, tokens int) {
@@ -90,26 +99,34 @@ func mergeMessages(messages []pkg.Keyv[interface{}]) (attachment []types.Attachm
 	}
 
 	// 合并历史对话
-	nMessages := common.MessageCombiner(messages, func(previous, next string, message map[string]string, buffer *bytes.Buffer) []string {
-		role := message["role"]
-		tokens += common.CalcTokens(message["content"])
-		if condition(role) == condition(next) {
+	iterator := func(opts struct {
+		Previous string
+		Next     string
+		Message  map[string]string
+		Buffer   *bytes.Buffer
+		Initial  func() pkg.Keyv[interface{}]
+	}) (messages []string, _ error) {
+		role := opts.Message["role"]
+		tokens += common.CalcTokens(opts.Message["content"])
+		if condition(role) == condition(opts.Next) {
 			// cache buffer
 			if role == "function" || role == "tool" {
-				buffer.WriteString(fmt.Sprintf("这是系统内置tools工具的返回结果: (%s)\n\n##\n%s\n##", message["name"], message["content"]))
-				return nil
+				opts.Buffer.WriteString(fmt.Sprintf("这是系统内置tools工具的返回结果: (%s)\n\n##\n%s\n##", opts.Message["name"], opts.Message["content"]))
+				return
 			}
-			buffer.WriteString(message["content"])
-			return nil
+			opts.Buffer.WriteString(opts.Message["content"])
+			return
 		}
 
-		defer buffer.Reset()
-		buffer.WriteString(fmt.Sprintf(message["content"]))
-		return []string{
-			fmt.Sprintf("%s： %s", condition(role), buffer.String()),
+		defer opts.Buffer.Reset()
+		opts.Buffer.WriteString(fmt.Sprintf(opts.Message["content"]))
+		messages = []string{
+			fmt.Sprintf("%s： %s", condition(role), opts.Buffer.String()),
 		}
-	})
+		return
+	}
 
+	nMessages, _ := common.TextMessageCombiner(messages, iterator)
 	join := strings.Join(nMessages, "\n\n")
 	join = common.PadJunkMessage(padMaxCount-len(join), join)
 

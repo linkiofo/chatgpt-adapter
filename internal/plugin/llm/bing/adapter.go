@@ -49,6 +49,7 @@ func (API) Completion(ctx *gin.Context) {
 
 	options, err := edge.NewDefaultOptions(cookie, "")
 	if err != nil {
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}
@@ -82,6 +83,7 @@ func (API) Completion(ctx *gin.Context) {
 
 	r, err := chat.Reply(ctx.Request.Context(), currMessage, pMessages)
 	if err != nil {
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}
@@ -90,7 +92,11 @@ func (API) Completion(ctx *gin.Context) {
 	if len(slice) > 1 {
 		logger.Infof("bing status: [%s]", slice[1])
 	}
-	waitResponse(ctx, matchers, cancel, r, completion.Stream)
+
+	content := waitResponse(ctx, matchers, cancel, r, completion.Stream)
+	if content == "" && response.NotSSEHeader(ctx) {
+		response.Error(ctx, -1, "EMPTY RESPONSE")
+	}
 }
 
 func joinMatchers(ctx *gin.Context, matchers []common.Matcher) (chan error, []common.Matcher) {

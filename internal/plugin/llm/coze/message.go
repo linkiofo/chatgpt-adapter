@@ -48,8 +48,7 @@ func waitMessage(chatResponse chan string, cancel func(str string) bool) (conten
 	return content, nil
 }
 
-func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error, chatResponse chan string, sse bool) {
-	content := ""
+func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error, chatResponse chan string, sse bool) (content string) {
 	created := time.Now().Unix()
 	logger.Infof("waitResponse ...")
 	tokens := ctx.GetInt(ginTokens)
@@ -60,6 +59,7 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 			if err != nil {
 				logger.Error(err)
 				if response.NotSSEHeader(ctx) {
+					logger.Error(err)
 					response.Error(ctx, -1, err)
 				}
 				return
@@ -75,6 +75,7 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 				err := strings.TrimPrefix(raw, "error: ")
 				logger.Error(err)
 				if response.NotSSEHeader(ctx) {
+					logger.Error(err)
 					response.Error(ctx, -1, err)
 				}
 				return
@@ -90,6 +91,10 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 			logger.Debug(raw)
 
 			raw = common.ExecMatchers(matchers, raw)
+			if len(raw) == 0 {
+				continue
+			}
+
 			if sse {
 				response.SSEResponse(ctx, Model, raw, created)
 			}
@@ -98,12 +103,17 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 	}
 
 label:
+	if content == "" && response.NotSSEHeader(ctx) {
+		return
+	}
+
 	ctx.Set(vars.GinCompletionUsage, common.CalcUsageTokens(content, tokens))
 	if !sse {
 		response.Response(ctx, Model, content)
 	} else {
 		response.SSEResponse(ctx, Model, "[DONE]", created)
 	}
+	return
 }
 
 func mergeMessages(messages []pkg.Keyv[interface{}]) (newMessages []coze.Message, tokens int) {
@@ -116,28 +126,36 @@ func mergeMessages(messages []pkg.Keyv[interface{}]) (newMessages []coze.Message
 		}
 	}
 
-	newMessages = common.MessageCombiner(messages, func(previous, next string, message map[string]string, buffer *bytes.Buffer) []coze.Message {
-		role := message["role"]
-		tokens += common.CalcTokens(message["content"])
-		if condition(role) == condition(next) {
+	iterator := func(opts struct {
+		Previous string
+		Next     string
+		Message  map[string]string
+		Buffer   *bytes.Buffer
+		Initial  func() pkg.Keyv[interface{}]
+	}) (messages []coze.Message, _ error) {
+		role := opts.Message["role"]
+		tokens += common.CalcTokens(opts.Message["content"])
+		if condition(role) == condition(opts.Next) {
 			// cache buffer
 			if role == "function" || role == "tool" {
-				buffer.WriteString(fmt.Sprintf("这是系统内置tools工具的返回结果: (%s)\n\n##\n%s\n##", message["name"], message["content"]))
-				return nil
+				opts.Buffer.WriteString(fmt.Sprintf("这是系统内置tools工具的返回结果: (%s)\n\n##\n%s\n##", opts.Message["name"], opts.Message["content"]))
+				return
 			}
-			buffer.WriteString(message["content"])
-			return nil
+			opts.Buffer.WriteString(opts.Message["content"])
+			return
 		}
 
-		defer buffer.Reset()
-		buffer.WriteString(fmt.Sprintf(message["content"]))
-		return []coze.Message{
+		defer opts.Buffer.Reset()
+		opts.Buffer.WriteString(fmt.Sprintf(opts.Message["content"]))
+		messages = []coze.Message{
 			{
 				Role:    role,
-				Content: buffer.String(),
+				Content: opts.Buffer.String(),
 			},
 		}
-	})
+		return
+	}
 
+	newMessages, _ = common.TextMessageCombiner(messages, iterator)
 	return
 }

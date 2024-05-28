@@ -19,7 +19,7 @@ var (
 
 	// 35-16k
 	botId35_16k   = "7353052833752694791"
-	version35_16k = "1712016747307"
+	version35_16k = "1716683639615"
 	scene35_16k   = 2
 
 	// 8k
@@ -102,6 +102,7 @@ func (API) Completion(ctx *gin.Context) {
 
 	chatResponse, err := chat.Reply(ctx.Request.Context(), query)
 	if err != nil {
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}
@@ -110,7 +111,10 @@ func (API) Completion(ctx *gin.Context) {
 	cancel, matcher := common.NewCancelMather(ctx)
 	matchers = append(matchers, matcher)
 
-	waitResponse(ctx, matchers, cancel, chatResponse, completion.Stream)
+	content := waitResponse(ctx, matchers, cancel, chatResponse, completion.Stream)
+	if content == "" && response.NotSSEHeader(ctx) {
+		response.Error(ctx, -1, "EMPTY RESPONSE")
+	}
 }
 
 func (API) Generation(ctx *gin.Context) {
@@ -126,6 +130,7 @@ func (API) Generation(ctx *gin.Context) {
 	chat := coze.New(co, msToken, options)
 	image, err := chat.Images(ctx.Request.Context(), generation.Message)
 	if err != nil {
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}

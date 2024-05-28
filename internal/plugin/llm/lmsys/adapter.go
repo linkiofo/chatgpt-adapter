@@ -6,6 +6,7 @@ import (
 	"github.com/bincooo/chatgpt-adapter/internal/gin.handler/response"
 	"github.com/bincooo/chatgpt-adapter/internal/plugin"
 	"github.com/bincooo/chatgpt-adapter/internal/vars"
+	"github.com/bincooo/chatgpt-adapter/logger"
 	"github.com/gin-gonic/gin"
 	"strings"
 )
@@ -283,12 +284,16 @@ label:
 			goto label
 		}
 
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}
 
 	cancel, matchers := joinMatchers(ctx, matchers)
-	waitResponse(ctx, matchers, ch, cancel, completion.Stream)
+	content := waitResponse(ctx, matchers, ch, cancel, completion.Stream)
+	if content == "" && response.NotSSEHeader(ctx) {
+		response.Error(ctx, -1, "EMPTY RESPONSE")
+	}
 }
 
 func joinMatchers(ctx *gin.Context, matchers []common.Matcher) (chan error, []common.Matcher) {

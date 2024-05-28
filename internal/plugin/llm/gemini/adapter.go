@@ -5,6 +5,7 @@ import (
 	com "github.com/bincooo/chatgpt-adapter/internal/common"
 	"github.com/bincooo/chatgpt-adapter/internal/gin.handler/response"
 	"github.com/bincooo/chatgpt-adapter/internal/plugin"
+	"github.com/bincooo/chatgpt-adapter/logger"
 	"github.com/gin-gonic/gin"
 	"net/url"
 	"strings"
@@ -79,7 +80,13 @@ func (API) Completion(ctx *gin.Context) {
 		matchers   = com.GetGinMatchers(ctx)
 	)
 
-	newMessages, tokens := mergeMessages(completion.Messages)
+	newMessages, tokens, err := mergeMessages(completion.Messages)
+	if err != nil {
+		logger.Error(err)
+		response.Error(ctx, -1, err)
+		return
+	}
+
 	ctx.Set(ginTokens, tokens)
 	r, err := build(ctx.Request.Context(), proxies, cookie, newMessages, completion)
 	if err != nil {
@@ -87,8 +94,14 @@ func (API) Completion(ctx *gin.Context) {
 		if errors.As(err, &urlError) {
 			urlError.URL = strings.ReplaceAll(urlError.URL, cookie, "AIzaSy***")
 		}
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}
-	waitResponse(ctx, matchers, r, completion.Stream)
+
+	// 最近似乎很容易发送空消息？
+	content := waitResponse(ctx, matchers, r, completion.Stream)
+	if content == "" && response.NotSSEHeader(ctx) {
+		response.Error(ctx, -1, "EMPTY RESPONSE")
+	}
 }

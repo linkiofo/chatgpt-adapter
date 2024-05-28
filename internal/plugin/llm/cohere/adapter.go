@@ -122,11 +122,15 @@ func (API) Completion(ctx *gin.Context) {
 
 	chatResponse, err := chat.Reply(ctx.Request.Context(), pMessages, system, message, coh.ToolObject{})
 	if err != nil {
+		logger.Error(err)
 		response.Error(ctx, -1, err)
 		return
 	}
 
-	waitResponse(ctx, matchers, chatResponse, completion.Stream)
+	content := waitResponse(ctx, matchers, chatResponse, completion.Stream)
+	if content == "" && response.NotSSEHeader(ctx) {
+		response.Error(ctx, -1, "EMPTY RESPONSE")
+	}
 }
 
 func convertToolResults(completion pkg.ChatCompletion) (toolResults []coh.ToolResult) {

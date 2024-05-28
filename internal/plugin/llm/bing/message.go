@@ -38,10 +38,9 @@ func waitMessage(chatResponse chan edge.ChatResponse, cancel func(str string) bo
 	return content, nil
 }
 
-func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error, chatResponse chan edge.ChatResponse, sse bool) {
+func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error, chatResponse chan edge.ChatResponse, sse bool) (content string) {
 	var (
 		pos     = 0
-		content = ""
 		created = time.Now().Unix()
 		tokens  = ctx.GetInt(ginTokens)
 	)
@@ -53,6 +52,7 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 			if err != nil {
 				logger.Error(err)
 				if response.NotSSEHeader(ctx) {
+					logger.Error(err)
 					response.Error(ctx, -1, err)
 				}
 				return
@@ -67,6 +67,7 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 			if message.Error != nil {
 				logger.Error(message.Error)
 				if response.NotSSEHeader(ctx) {
+					logger.Error(message.Error)
 					response.Error(ctx, -1, message.Error)
 				}
 				return
@@ -81,6 +82,9 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 			}
 			pos = contentL
 			raw = common.ExecMatchers(matchers, raw)
+			if len(raw) == 0 {
+				continue
+			}
 
 			if sse {
 				response.SSEResponse(ctx, Model, raw, created)
@@ -90,12 +94,18 @@ func waitResponse(ctx *gin.Context, matchers []common.Matcher, cancel chan error
 	}
 
 label:
+	if content == "" && response.NotSSEHeader(ctx) {
+		return
+	}
+
 	ctx.Set(vars.GinCompletionUsage, common.CalcUsageTokens(content, tokens))
 	if !sse {
 		response.Response(ctx, Model, content)
 	} else {
 		response.SSEResponse(ctx, Model, "[DONE]", created)
 	}
+
+	return
 }
 
 func mergeMessages(pad bool, max int, messages []pkg.Keyv[interface{}]) (pMessages []edge.ChatMessage, text string, tokens int) {
@@ -111,32 +121,38 @@ func mergeMessages(pad bool, max int, messages []pkg.Keyv[interface{}]) (pMessag
 	}
 
 	// 合并历史对话
-	newMessages := common.MessageCombiner(messages, func(previous, next string, message map[string]string, buffer *bytes.Buffer) []edge.ChatMessage {
-		role := message["role"]
-		tokens += common.CalcTokens(message["content"])
-		if condition(role) == condition(next) {
+	iterator := func(opts struct {
+		Previous string
+		Next     string
+		Message  map[string]string
+		Buffer   *bytes.Buffer
+		Initial  func() pkg.Keyv[interface{}]
+	}) (result []edge.ChatMessage, _ error) {
+		role := opts.Message["role"]
+		tokens += common.CalcTokens(opts.Message["content"])
+		if condition(role) == condition(opts.Next) {
 			// cache buffer
 			if role == "function" || role == "tool" {
-				buffer.WriteString(fmt.Sprintf("这是内置工具的返回结果: (%s)\n\n##\n%s\n##", message["name"], message["content"]))
-				return nil
+				opts.Buffer.WriteString(fmt.Sprintf("这是内置工具的返回结果: (%s)\n\n##\n%s\n##", opts.Message["name"], opts.Message["content"]))
+				return
 			}
 
-			buffer.WriteString(fmt.Sprintf("<|%s|>\n%s\n<|end|>", role, message["content"]))
-			return nil
+			opts.Buffer.WriteString(fmt.Sprintf("<|%s|>\n%s\n<|end|>", role, opts.Message["content"]))
+			return
 		}
 
-		defer buffer.Reset()
-		var result []edge.ChatMessage
-		if previous == "system" {
-			result = append(result, edge.BuildUserMessage(buffer.String()))
+		defer opts.Buffer.Reset()
+		if opts.Previous == "system" {
+			result = append(result, edge.BuildUserMessage(opts.Buffer.String()))
 			result = append(result, edge.BuildBotMessage("<|assistant|>ok ~<|end|>\n"))
-			buffer.Reset()
+			opts.Buffer.Reset()
 		}
 
-		buffer.WriteString(fmt.Sprintf("<|%s|>\n%s\n<|end|>", role, message["content"]))
-		result = append(result, edge.BuildSwitchMessage(condition(role), buffer.String()))
-		return result
-	})
+		opts.Buffer.WriteString(fmt.Sprintf("<|%s|>\n%s\n<|end|>", role, opts.Message["content"]))
+		result = append(result, edge.BuildSwitchMessage(condition(role), opts.Buffer.String()))
+		return
+	}
+	newMessages, _ := common.TextMessageCombiner(messages, iterator)
 
 	// 尝试引导对话，避免道歉
 	if pad {
