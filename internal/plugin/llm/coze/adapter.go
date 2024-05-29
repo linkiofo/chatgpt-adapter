@@ -24,12 +24,12 @@ var (
 
 	// 8k
 	botId8k   = "7353047124357365778"
-	version8k = "1712645567468"
+	version8k = "1716940640540"
 	scene8k   = 2
 
 	// 128k
 	botId128k   = "7353048532129644562"
-	version128k = "1712016880672"
+	version128k = "1716940665830"
 	scene128k   = 2
 )
 
@@ -86,7 +86,13 @@ func (API) Completion(ctx *gin.Context) {
 		}
 	}
 
-	pMessages, tokens := mergeMessages(completion.Messages)
+	pMessages, tokens, err := mergeMessages(ctx)
+	if err != nil {
+		logger.Error(err)
+		response.Error(ctx, -1, err)
+		return
+	}
+
 	ctx.Set(ginTokens, tokens)
 	options := newOptions(proxies, completion.Model, pMessages)
 	co, msToken := extCookie(cookie)
@@ -112,7 +118,7 @@ func (API) Completion(ctx *gin.Context) {
 	matchers = append(matchers, matcher)
 
 	content := waitResponse(ctx, matchers, cancel, chatResponse, completion.Stream)
-	if content == "" && response.NotSSEHeader(ctx) {
+	if content == "" && response.NotResponse(ctx) {
 		response.Error(ctx, -1, "EMPTY RESPONSE")
 	}
 }
